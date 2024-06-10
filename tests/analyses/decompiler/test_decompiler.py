@@ -8,7 +8,6 @@ import re
 import unittest
 from functools import wraps
 
-from typing import List, Tuple
 import ailment
 
 import angr
@@ -47,7 +46,7 @@ WORKER = is_testing or bool(
 )  # this variable controls whether we print the decompilation code or not
 
 
-def set_decompiler_option(decompiler_options: List[Tuple], params: List[Tuple]) -> List[Tuple]:
+def set_decompiler_option(decompiler_options: list[tuple], params: list[tuple]) -> list[tuple]:
     if decompiler_options is None:
         decompiler_options = []
 
@@ -1453,8 +1452,8 @@ class TestDecompiler(unittest.TestCase):
         # by default, largest_successor_tree_outside_loop in RegionIdentifier is set to True, which means the
         # getopt_long() == -1 case should be entirely left outside the loop. by ensuring the call to error(0x1) is
         # within the last few lines of decompilation output, we ensure the -1 case is indeed outside the loop.
-        last_six_lines = "\n".join(line.strip(" ") for line in d.codegen.text.split("\n")[-7:])
-        assert 'error(1, *(__errno_location()), "%s");' in last_six_lines
+        last_seven_lines = "\n".join(line.strip(" ") for line in d.codegen.text.split("\n")[-8:])
+        assert 'error(1, *(__errno_location()), "%s");' in last_seven_lines
 
     @for_all_structuring_algos
     def test_decompiling_fmt0_main(self, decompiler_options=None):
@@ -3530,6 +3529,40 @@ class TestDecompiler(unittest.TestCase):
         # the ITE expression should not be propagated into the dst of an assignment
         # the original assignment (rax = memcmp(xxx)? 0, 1) should be removed as well
         assert d.codegen.text.count('"Welcome to the admin console, trusted user!"') == 1
+
+    def test_inlining(self):
+        # https://github.com/angr/angr/issues/4573
+        bin_path = os.path.join(test_location, "x86_64", "inline_gym.so")
+        proj = angr.Project(bin_path, auto_load_libs=False)
+        cfg = proj.analyses.CFGFast(normalize=True, data_references=True)
+        f = proj.kb.functions["main"]
+        d = proj.analyses[Decompiler].prep()(
+            f,
+            cfg=cfg.model,
+            inline_functions={proj.kb.functions["mylloc"], proj.kb.functions["five"]},
+            options=[(angr.analyses.decompiler.decompilation_options.options[0], True)],
+        )
+        self._print_decompilation_result(d)
+
+        assert "five" not in d.codegen.text
+        assert "mylloc" not in d.codegen.text
+        assert "malloc" in d.codegen.text
+        assert "bar(15)" in d.codegen.text
+        assert "malloc(15)" in d.codegen.text
+        assert "v1" not in d.codegen.text
+
+        d = proj.analyses[Decompiler].prep()(
+            f,
+            cfg=cfg.model,
+            inline_functions=f.functions_reachable(),
+            options=[(angr.analyses.decompiler.decompilation_options.options[0], True)],
+        )
+        self._print_decompilation_result(d)
+
+        assert "five" not in d.codegen.text
+        assert "mylloc" not in d.codegen.text
+        assert d.codegen.text.count("foo") == 1  # the recursive call
+        assert "bar" not in d.codegen.text
 
 
 if __name__ == "__main__":

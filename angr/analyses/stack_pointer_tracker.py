@@ -1,6 +1,6 @@
 # pylint:disable=abstract-method,ungrouped-imports
 
-from typing import Set, List, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 import re
 import logging
 from collections import defaultdict
@@ -69,7 +69,7 @@ class Constant:
 
     def __sub__(self, other):
         if type(self) is type(other):
-            return Constant(self.val + other.val)
+            return Constant(self.val - other.val)
         else:
             raise CouldNotResolveException
 
@@ -313,11 +313,12 @@ class StackPointerTracker(Analysis, ForwardAnalysis):
 
     def __init__(
         self,
-        func: Optional[Function],
-        reg_offsets: Set[int],
+        func: Function | None,
+        reg_offsets: set[int],
         block: Optional["Block"] = None,
         track_memory=True,
         cross_insn_opt=True,
+        initial_reg_values=None,
     ):
         if func is not None:
             if not func.normalized:
@@ -339,6 +340,9 @@ class StackPointerTracker(Analysis, ForwardAnalysis):
         self._blocks = {}
         self._reg_value_at_block_start = defaultdict(dict)
         self.cross_insn_opt = cross_insn_opt
+
+        if initial_reg_values:
+            self._reg_value_at_block_start[func.addr if func is not None else block.addr] = initial_reg_values
 
         _l.debug("Running on function %r", self._func)
         self._analyze()
@@ -438,6 +442,11 @@ class StackPointerTracker(Analysis, ForwardAnalysis):
             if self.offset_after_block(endpoint.addr, reg) is TOP:
                 return True
         return False
+
+    def offsets_for(self, reg):
+        return [
+            o for block in self._func.blocks if (o := self.offset_after_block(block.addr, reg)) not in (TOP, BOTTOM)
+        ]
 
     #
     # Overridable methods
@@ -811,8 +820,8 @@ class StackPointerTracker(Analysis, ForwardAnalysis):
             merged_state = merged_state.merge(other)
         return merged_state, merged_state == states[0]
 
-    def _find_callees(self, node) -> List[Function]:
-        callees: List[Function] = []
+    def _find_callees(self, node) -> list[Function]:
+        callees: list[Function] = []
         for _, dst, data in self._func.transition_graph.out_edges(node, data=True):
             if data.get("type") == "call":
                 if isinstance(dst, Function):

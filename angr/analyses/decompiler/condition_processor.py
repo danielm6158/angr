@@ -1,5 +1,6 @@
 from collections import defaultdict, OrderedDict
-from typing import Generator, Dict, Any, Optional, Set, List
+from typing import Any
+from collections.abc import Generator
 import operator
 import logging
 
@@ -14,6 +15,7 @@ from ...utils.lazy_import import lazy_import
 from ...utils import is_pyinstaller
 from ...utils.graph import dominates, inverted_idoms
 from ...block import Block, BlockNode
+from ...errors import AngrRuntimeError
 from .peephole_optimizations import InvertNegatedLogicalConjunctionsAndDisjunctions
 from .structuring.structurer_nodes import (
     MultiNode,
@@ -124,6 +126,7 @@ _ail2claripy_op_mapping = {
     "SCarry": lambda expr, _, m: _dummy_bvs(expr, m),
     "SBorrow": lambda expr, _, m: _dummy_bvs(expr, m),
     "ExpCmpNE": lambda expr, _, m: _dummy_bools(expr, m),
+    "CmpORD": lambda expr, _, m: _dummy_bvs(expr, m),  # in case CmpORDRewriter fails
 }
 
 #
@@ -138,8 +141,8 @@ class ConditionProcessor:
 
     def __init__(self, arch, condition_mapping=None):
         self.arch = arch
-        self._condition_mapping: Dict[str, Any] = {} if condition_mapping is None else condition_mapping
-        self.jump_table_conds: Dict[int, Set] = defaultdict(set)
+        self._condition_mapping: dict[str, Any] = {} if condition_mapping is None else condition_mapping
+        self.jump_table_conds: dict[int, set] = defaultdict(set)
         self.edge_conditions = {}
         self.reaching_conditions = {}
         self.guarding_conditions = {}
@@ -167,7 +170,7 @@ class ConditionProcessor:
             predicate = claripy.true
         return predicate
 
-    def recover_edge_conditions(self, region, graph=None) -> Dict:
+    def recover_edge_conditions(self, region, graph=None) -> dict:
         edge_conditions = {}
         # traverse the graph to recover the condition for each edge
         graph = graph or region.graph
@@ -181,8 +184,13 @@ class ConditionProcessor:
         self.edge_conditions = edge_conditions
 
     def recover_reaching_conditions(
-        self, region, graph=None, with_successors=False, case_entry_to_switch_head: Optional[Dict[int, int]] = None
+        self, region, graph=None, with_successors=False, case_entry_to_switch_head: dict[int, int] | None = None
     ):
+        """
+        Recover the reaching conditions for each block in an acyclic graph. Note that we assume the graph that's passed
+        in is acyclic.
+        """
+
         def _strictly_postdominates(inv_idoms, node_a, node_b):
             """
             Does node A strictly post-dominate node B on the graph?
@@ -457,7 +465,7 @@ class ConditionProcessor:
         raise NotImplementedError()
 
     @classmethod
-    def get_last_statements(cls, block) -> List[Optional[ailment.Stmt.Statement]]:
+    def get_last_statements(cls, block) -> list[ailment.Stmt.Statement | None]:
         if type(block) is SequenceNode:
             for last_node in reversed(block.nodes):
                 try:
@@ -837,7 +845,7 @@ class ConditionProcessor:
         return symbol
 
     @staticmethod
-    def sympy_expr_to_claripy_ast(expr, memo: Dict):
+    def sympy_expr_to_claripy_ast(expr, memo: dict):
         if expr.is_Symbol:
             return memo[expr]
         if isinstance(expr, sympy.Or):
@@ -850,7 +858,7 @@ class ConditionProcessor:
             return claripy.true
         if isinstance(expr, sympy.logic.boolalg.BooleanFalse):
             return claripy.false
-        raise RuntimeError("Unreachable reached")
+        raise AngrRuntimeError("Unreachable reached")
 
     @staticmethod
     def simplify_condition(cond, depth_limit=8, variables_limit=8):
@@ -1017,7 +1025,7 @@ class ConditionProcessor:
                 elif arg in common_exprs:
                     continue
                 else:
-                    raise RuntimeError("Unexpected behavior - you should never reach here")
+                    raise AngrRuntimeError("Unexpected behavior - you should never reach here")
 
             return claripy.And(*common_exprs, claripy.Or(*new_args))
 
@@ -1134,7 +1142,7 @@ class ConditionProcessor:
 
     @staticmethod
     def _remove_crossing_edges_between_cases(
-        graph: networkx.DiGraph, case_entry_to_switch_head: Dict[int, int]
+        graph: networkx.DiGraph, case_entry_to_switch_head: dict[int, int]
     ) -> networkx.DiGraph:
         starting_nodes = {node for node in graph if node.addr in case_entry_to_switch_head}
         if not starting_nodes:
